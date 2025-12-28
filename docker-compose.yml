@@ -1,0 +1,170 @@
+services:
+  setup:
+    container_name: CORE setup
+    profiles:
+      - setup
+    build:
+      context: ./config/setup/
+      args:
+        OPENSEARCH_VERSION: ${OPENSEARCH_VERSION:-latest}
+    init: true
+    environment:
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m" # minimum and maximum Java heap size, recommend setting both to 50% of system RAM
+      SYSTEM_OS_DASHBOARD_PASSWORD: ${SYSTEM_OS_DASHBOARD_PASSWORD:-}
+      OPENSEARCH_ADMIN_PASS: ${GLOBAL_ADMIN_PASS:-}
+      OPENSEARCH_HOST: ${OPENSEARCH_HOST}
+      CERT_STRENGTH: ${CERT_STRENGTH}
+      CERT_DAYS: ${CERT_DAYS}
+      CERT_SN: ${CERT_SN}
+      CERT_DN: ${CERT_DN}
+      OS_HOST: ${OPENSEARCH_HOST:-os01}
+      OS_PORT: ${OPENSEARCH_PORT:-9200}
+    volumes:
+      - ./stack-data/certificates:/certs
+      - ./stack-data/certificates:/usr/share/opensearch/config/certificates:ro #This is mapped twice, once for the entrypoint to create the certificates, once for OpenSearch to be able to talk to the cluster
+      - ./config/setup/config/internal_users.yml:/usr/share/opensearch/config/opensearch-security/internal_users.yml:ro,Z
+      - ./config/setup/config/config.yml:/usr/share/opensearch/config/opensearch-security/config.yml:ro,Z
+      - ./config/setup/config/roles_mapping.yml:/usr/share/opensearch/config/opensearch-security/roles_mapping.yml:ro,Z
+      - ./config/setup/config/roles.yml:/usr/share/opensearch/config/opensearch-security/roles.yml:ro,Z
+      - ./config/setup/entrypoint.sh:/entrypoint.sh:ro,Z
+    networks:
+      - core-net   
+    depends_on:
+      - os01
+      - os02
+      - os03
+
+  os01:
+    image: opensearchproject/opensearch:${OPENSEARCH_VERSION:-latest}
+    container_name: os01
+    restart: unless-stopped
+    environment:
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+      node.name: os01
+      plugins.security.ssl.transport.pemkey_filepath: certificates/os01/os01.key # relative path
+      plugins.security.ssl.transport.pemcert_filepath: certificates/os01/os01.pem
+      plugins.security.ssl.http.pemkey_filepath: certificates/os01/os01.key
+      plugins.security.ssl.http.pemcert_filepath: certificates/os01/os01.pem
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+    ulimits:
+      memlock:
+        soft: -1 # Set memlock to unlimited (no soft or hard limit)
+        hard: -1
+      nofile:
+        soft: 65536 # Maximum number of open files for the opensearch user - set to at least 65536
+        hard: 65536
+    volumes:
+      - "./config/opensearch/config/opensearch.yml:/usr/share/opensearch/config/opensearch.yml"
+      - "os-data1:/usr/share/opensearch/data"
+      - ./stack-data/certificates/os01:/usr/share/opensearch/config/certificates/os01:ro
+      - ./stack-data/certificates/ca-share:/usr/share/opensearch/config/certificates/ca:ro
+    ports:
+      - 9200:9200 # REST API
+      - 9600:9600 # Performance Analyzer
+    expose:
+      - 9200 # REST API
+      - 9600 # Performance Analyzer
+    networks:
+      - core-net # All of the containers will join the same Docker bridge network
+
+
+  os02:
+    image: opensearchproject/opensearch:${OPENSEARCH_VERSION:-latest}
+    container_name: os02
+    restart: unless-stopped
+    environment:
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+      node.name: os02
+      plugins.security.ssl.transport.pemkey_filepath: certificates/os02/os02.key # relative path
+      plugins.security.ssl.transport.pemcert_filepath: certificates/os02/os02.pem
+      plugins.security.ssl.http.pemkey_filepath: certificates/os02/os02.key
+      plugins.security.ssl.http.pemcert_filepath: certificates/os02/os02.pem
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+    ulimits:
+      memlock:
+        soft: -1 # Set memlock to unlimited (no soft or hard limit)
+        hard: -1
+      nofile:
+        soft: 65536 # Maximum number of open files for the opensearch user - set to at least 65536
+        hard: 65536
+    volumes:
+      - "./config/opensearch/config/opensearch.yml:/usr/share/opensearch/config/opensearch.yml"
+      - "os-data2:/usr/share/opensearch/data"
+      - ./stack-data/certificates/os02:/usr/share/opensearch/config/certificates/os02:ro
+      - ./stack-data/certificates/ca-share:/usr/share/opensearch/config/certificates/ca:ro
+    expose:
+      - 9200 # REST API
+      - 9600 # Performance Analyzer
+    networks:
+      - core-net # All of the containers will join the same Docker bridge network
+
+
+  os03:
+    image: opensearchproject/opensearch:${OPENSEARCH_VERSION:-latest}
+    container_name: os03
+    restart: unless-stopped
+    environment:
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+      node.name: os03
+      plugins.security.ssl.transport.pemkey_filepath: certificates/os03/os03.key # relative path
+      plugins.security.ssl.transport.pemcert_filepath: certificates/os03/os03.pem
+      plugins.security.ssl.http.pemkey_filepath: certificates/os03/os03.key
+      plugins.security.ssl.http.pemcert_filepath: certificates/os03/os03.pem
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+    ulimits:
+      memlock:
+        soft: -1 # Set memlock to unlimited (no soft or hard limit)
+        hard: -1
+      nofile:
+        soft: 65536 # Maximum number of open files for the opensearch user - set to at least 65536
+        hard: 65536
+    volumes:
+      - "./config/opensearch/config/opensearch.yml:/usr/share/opensearch/config/opensearch.yml"
+      - "os-data3:/usr/share/opensearch/data"
+      - ./stack-data/certificates/os03:/usr/share/opensearch/config/certificates/os03:ro
+      - ./stack-data/certificates/ca-share:/usr/share/opensearch/config/certificates/ca:ro
+    expose:
+      - 9200 # REST API
+      - 9600 # Performance Analyzer
+    networks:
+      - core-net # All of the containers will join the same Docker bridge network
+
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:${OPENSEARCH_VERSION:-latest}
+    container_name: os-dashboards
+    restart: unless-stopped
+    environment:
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+    volumes:
+      - "./config/opensearch-dashboards/config/opensearch-dashboards.yml:/usr/share/opensearch-dashboards/config/opensearch_dashboards.yml"
+      - ./stack-data/certificates/os-dashboards:/usr/share/opensearch-dashboards/config/certificates/os-dashboards:ro
+      - ./stack-data/certificates/ca-share:/usr/share/opensearch-dashboards/config/certificates/ca:ro
+    ports:
+      - 5601:5601
+    networks:
+      - core-net 
+
+  fluentd:
+    build:
+      context: ./config/fluentd/
+      args:
+        FLUENTD_VERSION: ${FLUENTD_VERSION:-latest}
+    container_name: fluentd
+    restart: unless-stopped
+    ports:
+      - "5044:5044"
+    volumes:
+      - ./config/fluentd/config:/fluentd/etc:ro
+      - ./stack-data/certificates/fluentd:/certificates/fluentd:rw,Z
+      - ./stack-data/certificates/ca-share:/certificates/ca:ro
+    networks:
+      - core-net
+
+networks:
+  core-net:
+    driver: bridge
+
+volumes:
+  os-data1:
+  os-data2:
+  os-data3:

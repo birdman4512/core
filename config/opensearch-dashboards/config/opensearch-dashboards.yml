@@ -1,0 +1,58 @@
+server:
+  name: os-dashboards
+  host: "0.0.0.0"
+
+# Set the value to true to enable multiple data source feature
+data_source:
+  enabled: true
+
+# Set the value to true to enable workspace feature
+workspace:
+  enabled: true
+
+# Set the value to true to enable explore feature
+explore:
+  enabled: true
+
+opensearch:
+  hosts: 
+    - "https://os01:9200"
+    - "https://os02:9200"
+    - "https://os03:9200"
+  ssl:
+      verificationMode: full
+      certificateAuthorities: ["/usr/share/opensearch-dashboards/config/certificates/ca/ca.pem"]
+      certificate: "/usr/share/opensearch-dashboards/config/certificates/os-dashboards/os-dashboards.pem"
+      key: "/usr/share/opensearch-dashboards/config/certificates/os-dashboards/os-dashboards.key"
+
+
+opensearch.requestHeadersAllowlist: ["securitytenant", "Authorization"]
+
+#logging:
+  #dest: /usr/share/os-dashboards/logs/opensearch_dashboards.log
+
+# Encrypt traffic between the browser and OpenSearch-Dashboards
+server.ssl:
+  enabled: true
+  certificateAuthorities: ["/usr/share/opensearch-dashboards/config/certificates/ca/ca.pem"]
+  certificate: "/usr/share/opensearch-dashboards/config/certificates/os-dashboards/os-dashboards.pem"
+  key: "/usr/share/opensearch-dashboards/config/certificates/os-dashboards/os-dashboards.key"
+
+#Enable Machine Learning Features
+ml_commons_dashboards:
+  enabled: true
+    
+#Multi Tenancy Settings
+opensearch_security:
+  multitenancy:
+    enabled: true
+    tenants:
+      enable_global: true
+      enable_private: true
+      preferred: ["Private", "Global"]
+    enable_filter: true
+  readonly_mode.roles: ["kibana_read_only"]
+  cookie.secure: false
+  allow_client_certificates: true
+
+

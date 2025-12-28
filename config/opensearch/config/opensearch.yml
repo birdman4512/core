@@ -1,0 +1,51 @@
+cluster.name: opensearch-cluster
+network.host: 0.0.0.0
+
+# All nodes have all roles (master-eligible, data, ingest, coordinating)
+node.roles: [cluster_manager, data, ingest, remote_cluster_client]
+
+bootstrap.memory_lock: "true" # when combined with ulimits memlock settings, disables swapping.
+
+cluster.routing.allocation.disk:
+  threshold_enabled: true
+  watermark.low: 93%
+  watermark.high: 95%
+
+discovery.seed_hosts: 
+  - 'os01'
+  - 'os02'
+  - 'os03'
+cluster.initial_cluster_manager_nodes:
+  - 'os01'
+  - 'os02'
+  - 'os03'
+
+plugins.security:
+  # Uncomment the following two lines if you would like to store audit logs within OpenSearch.
+#  audit:
+#    type: internal_opensearch
+  ssl:
+    http:
+      enabled: true
+      clientauth_mode: OPTIONAL #Could be OPTIONAL or REQUIRED
+      pemtrustedcas_filepath: certificates/ca/ca.pem
+    transport:
+      enabled: true
+      pemtrustedcas_filepath: certificates/ca/ca.pem
+      enforce_hostname_verification: false
+  allow_unsafe_democertificates: false
+  allow_default_init_securityindex: true
+  authcz.admin_dn:
+    - 'CN=ADMIN,O=QuirkyIT,L=BNE,ST=QLD,C=AU'
+  nodes_dn:
+    - 'CN=os01,O=QuirkyIT,L=BNE,ST=QLD,C=AU'
+    - 'CN=os02,O=QuirkyIT,L=BNE,ST=QLD,C=AU'
+    - 'CN=os03,O=QuirkyIT,L=BNE,ST=QLD,C=AU'
+  restapi:
+    roles_enabled: ["all_access", "security_rest_api_access"]
+    #password_validation_regex: '(?=.*[A-Z])(?=.*[^a-zA-Z\d])(?=.*[0-9])(?=.*[a-z]).{8,}'
+    #password_validation_error_message: “Password must be minimum 8 characters long and must contain at least one uppercase letter, one lowercase letter, one digit, and one special character.”
+  system_indices:
+    enabled: true
+    indices: [".opendistro-alerting-config", ".opendistro-alerting-alert*", ".opendistro-anomaly-results*", ".opendistro-anomaly-detector*", ".opendistro-anomaly-checkpoints", ".opendistro-anomaly-detection-state", ".opendistro-reports-*", ".opendistro-notifications-*", ".opendistro-notebooks", ".opendistro-asynchronous-search-response*"]
+
