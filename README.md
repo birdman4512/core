@@ -85,10 +85,10 @@ output.logstash:
 ### Index Patterns
 
 Data is automatically indexed with date-based patterns:
-- `filebeat-YYYY.MM.dd`
-- `metricbeat-YYYY.MM.dd`
-- `packetbeat-YYYY.MM.dd`
-- `fluentd-YYYY.MM.dd`
+- `fluentd-filebeat`
+- `fluentd-metricbeat`
+- `fluentd-packetbeat`
+- `fluentd-`
 
 ## 🔒 Security Features
 
