@@ -1,161 +1,207 @@
 services:
+  # Phase 1 (one-shot): generate the CA + TLS certificates before the nodes
+  # start. Runs as root so it can own the certs to the service uids.
   setup:
-    container_name: CORE setup
-    profiles:
-      - setup
-    build:
-      context: ./config/setup/
-      args:
-        OPENSEARCH_VERSION: ${OPENSEARCH_VERSION:-latest}
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTICSEARCH_VERSION:-8.15.3}
+    container_name: core-setup
     init: true
+    user: "0"
     environment:
-      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m" # minimum and maximum Java heap size, recommend setting both to 50% of system RAM
-      SYSTEM_OS_DASHBOARD_PASSWORD: ${SYSTEM_OS_DASHBOARD_PASSWORD:-}
-      OPENSEARCH_ADMIN_PASS: ${GLOBAL_ADMIN_PASS:-}
-      OPENSEARCH_HOST: ${OPENSEARCH_HOST}
-      CERT_STRENGTH: ${CERT_STRENGTH}
-      CERT_DAYS: ${CERT_DAYS}
-      CERT_SN: ${CERT_SN}
-      CERT_DN: ${CERT_DN}
-      OS_HOST: ${OPENSEARCH_HOST:-os01}
-      OS_PORT: ${OPENSEARCH_PORT:-9200}
+      CERT_DAYS: ${CERT_DAYS:-730}
     volumes:
       - ./stack-data/certificates:/certs
-      - ./stack-data/certificates:/usr/share/opensearch/config/certificates:ro #This is mapped twice, once for the entrypoint to create the certificates, once for OpenSearch to be able to talk to the cluster
-      - ./config/setup/config/internal_users.yml:/usr/share/opensearch/config/opensearch-security/internal_users.yml:ro,Z
-      - ./config/setup/config/config.yml:/usr/share/opensearch/config/opensearch-security/config.yml:ro,Z
-      - ./config/setup/config/roles_mapping.yml:/usr/share/opensearch/config/opensearch-security/roles_mapping.yml:ro,Z
-      - ./config/setup/config/roles.yml:/usr/share/opensearch/config/opensearch-security/roles.yml:ro,Z
-      - ./config/setup/entrypoint.sh:/entrypoint.sh:ro,Z
+      - ./config/setup/entrypoint.sh:/entrypoint.sh:ro
+    command: ["bash", "/entrypoint.sh", "certs"]
     networks:
-      - core-net   
-    depends_on:
-      - os01
-      - os02
-      - os03
+      - core-net
 
-  os01:
-    image: opensearchproject/opensearch:${OPENSEARCH_VERSION:-latest}
-    container_name: os01
-    restart: unless-stopped
+  # Phase 2 (one-shot): once the cluster is up, set the kibana_system password
+  # and create the least-privilege logstash_writer account. Idempotent.
+  configure:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTICSEARCH_VERSION:-8.15.3}
+    container_name: core-configure
+    init: true
+    depends_on:
+      es01:
+        condition: service_healthy
     environment:
-      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
-      node.name: os01
-      plugins.security.ssl.transport.pemkey_filepath: certificates/os01/os01.key # relative path
-      plugins.security.ssl.transport.pemcert_filepath: certificates/os01/os01.pem
-      plugins.security.ssl.http.pemkey_filepath: certificates/os01/os01.key
-      plugins.security.ssl.http.pemcert_filepath: certificates/os01/os01.pem
-      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      ELASTICSEARCH_HOST: ${ELASTICSEARCH_HOST:-es01}
+      ELASTICSEARCH_PORT: ${ELASTICSEARCH_PORT:-9200}
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD}
+      KIBANA_PASSWORD: ${KIBANA_PASSWORD}
+      LOGSTASH_PASSWORD: ${LOGSTASH_PASSWORD}
+    volumes:
+      - ./stack-data/certificates:/certs:ro
+      - ./config/setup/entrypoint.sh:/entrypoint.sh:ro
+    command: ["bash", "/entrypoint.sh", "configure"]
+    networks:
+      - core-net
+
+  es01:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTICSEARCH_VERSION:-8.15.3}
+    container_name: es01
+    restart: unless-stopped
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    environment:
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m" # min/max heap; set both to ~50% of the container's RAM
+      node.name: es01
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD}
+      xpack.security.transport.ssl.key: certificates/es01/es01.key
+      xpack.security.transport.ssl.certificate: certificates/es01/es01.pem
+      xpack.security.transport.ssl.certificate_authorities: certificates/ca/ca.pem
+      xpack.security.http.ssl.key: certificates/es01/es01.key
+      xpack.security.http.ssl.certificate: certificates/es01/es01.pem
+      xpack.security.http.ssl.certificate_authorities: certificates/ca/ca.pem
     ulimits:
       memlock:
-        soft: -1 # Set memlock to unlimited (no soft or hard limit)
+        soft: -1 # unlimited so bootstrap.memory_lock can pin the heap
         hard: -1
       nofile:
-        soft: 65536 # Maximum number of open files for the opensearch user - set to at least 65536
+        soft: 65536
         hard: 65536
     volumes:
-      - "./config/opensearch/config/opensearch.yml:/usr/share/opensearch/config/opensearch.yml"
-      - "os-data1:/usr/share/opensearch/data"
-      - ./stack-data/certificates/os01:/usr/share/opensearch/config/certificates/os01:ro
-      - ./stack-data/certificates/ca-share:/usr/share/opensearch/config/certificates/ca:ro
+      - "./config/elasticsearch/config/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro"
+      - "es-data1:/usr/share/elasticsearch/data"
+      - ./stack-data/certificates/es01:/usr/share/elasticsearch/config/certificates/es01:ro
+      - ./stack-data/certificates/ca-share:/usr/share/elasticsearch/config/certificates/ca:ro
     ports:
       - 9200:9200 # REST API
-      - 9600:9600 # Performance Analyzer
-    expose:
-      - 9200 # REST API
-      - 9600 # Performance Analyzer
     networks:
-      - core-net # All of the containers will join the same Docker bridge network
+      - core-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s --cacert config/certificates/ca/ca.pem --cert config/certificates/es01/es01.pem --key config/certificates/es01/es01.key https://localhost:9200 | grep -q 'missing authentication credentials'"]
+      interval: 10s
+      timeout: 10s
+      retries: 60
 
-
-  os02:
-    image: opensearchproject/opensearch:${OPENSEARCH_VERSION:-latest}
-    container_name: os02
+  es02:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTICSEARCH_VERSION:-8.15.3}
+    container_name: es02
     restart: unless-stopped
+    depends_on:
+      setup:
+        condition: service_completed_successfully
     environment:
-      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
-      node.name: os02
-      plugins.security.ssl.transport.pemkey_filepath: certificates/os02/os02.key # relative path
-      plugins.security.ssl.transport.pemcert_filepath: certificates/os02/os02.pem
-      plugins.security.ssl.http.pemkey_filepath: certificates/os02/os02.key
-      plugins.security.ssl.http.pemcert_filepath: certificates/os02/os02.pem
-      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+      node.name: es02
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD}
+      xpack.security.transport.ssl.key: certificates/es02/es02.key
+      xpack.security.transport.ssl.certificate: certificates/es02/es02.pem
+      xpack.security.transport.ssl.certificate_authorities: certificates/ca/ca.pem
+      xpack.security.http.ssl.key: certificates/es02/es02.key
+      xpack.security.http.ssl.certificate: certificates/es02/es02.pem
+      xpack.security.http.ssl.certificate_authorities: certificates/ca/ca.pem
     ulimits:
       memlock:
-        soft: -1 # Set memlock to unlimited (no soft or hard limit)
+        soft: -1
         hard: -1
       nofile:
-        soft: 65536 # Maximum number of open files for the opensearch user - set to at least 65536
+        soft: 65536
         hard: 65536
     volumes:
-      - "./config/opensearch/config/opensearch.yml:/usr/share/opensearch/config/opensearch.yml"
-      - "os-data2:/usr/share/opensearch/data"
-      - ./stack-data/certificates/os02:/usr/share/opensearch/config/certificates/os02:ro
-      - ./stack-data/certificates/ca-share:/usr/share/opensearch/config/certificates/ca:ro
-    expose:
-      - 9200 # REST API
-      - 9600 # Performance Analyzer
+      - "./config/elasticsearch/config/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro"
+      - "es-data2:/usr/share/elasticsearch/data"
+      - ./stack-data/certificates/es02:/usr/share/elasticsearch/config/certificates/es02:ro
+      - ./stack-data/certificates/ca-share:/usr/share/elasticsearch/config/certificates/ca:ro
     networks:
-      - core-net # All of the containers will join the same Docker bridge network
+      - core-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s --cacert config/certificates/ca/ca.pem --cert config/certificates/es02/es02.pem --key config/certificates/es02/es02.key https://localhost:9200 | grep -q 'missing authentication credentials'"]
+      interval: 10s
+      timeout: 10s
+      retries: 60
 
-
-  os03:
-    image: opensearchproject/opensearch:${OPENSEARCH_VERSION:-latest}
-    container_name: os03
+  es03:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTICSEARCH_VERSION:-8.15.3}
+    container_name: es03
     restart: unless-stopped
+    depends_on:
+      setup:
+        condition: service_completed_successfully
     environment:
-      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
-      node.name: os03
-      plugins.security.ssl.transport.pemkey_filepath: certificates/os03/os03.key # relative path
-      plugins.security.ssl.transport.pemcert_filepath: certificates/os03/os03.pem
-      plugins.security.ssl.http.pemkey_filepath: certificates/os03/os03.key
-      plugins.security.ssl.http.pemcert_filepath: certificates/os03/os03.pem
-      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+      node.name: es03
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD}
+      xpack.security.transport.ssl.key: certificates/es03/es03.key
+      xpack.security.transport.ssl.certificate: certificates/es03/es03.pem
+      xpack.security.transport.ssl.certificate_authorities: certificates/ca/ca.pem
+      xpack.security.http.ssl.key: certificates/es03/es03.key
+      xpack.security.http.ssl.certificate: certificates/es03/es03.pem
+      xpack.security.http.ssl.certificate_authorities: certificates/ca/ca.pem
     ulimits:
       memlock:
-        soft: -1 # Set memlock to unlimited (no soft or hard limit)
+        soft: -1
         hard: -1
       nofile:
-        soft: 65536 # Maximum number of open files for the opensearch user - set to at least 65536
+        soft: 65536
         hard: 65536
     volumes:
-      - "./config/opensearch/config/opensearch.yml:/usr/share/opensearch/config/opensearch.yml"
-      - "os-data3:/usr/share/opensearch/data"
-      - ./stack-data/certificates/os03:/usr/share/opensearch/config/certificates/os03:ro
-      - ./stack-data/certificates/ca-share:/usr/share/opensearch/config/certificates/ca:ro
-    expose:
-      - 9200 # REST API
-      - 9600 # Performance Analyzer
+      - "./config/elasticsearch/config/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro"
+      - "es-data3:/usr/share/elasticsearch/data"
+      - ./stack-data/certificates/es03:/usr/share/elasticsearch/config/certificates/es03:ro
+      - ./stack-data/certificates/ca-share:/usr/share/elasticsearch/config/certificates/ca:ro
     networks:
-      - core-net # All of the containers will join the same Docker bridge network
+      - core-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s --cacert config/certificates/ca/ca.pem --cert config/certificates/es03/es03.pem --key config/certificates/es03/es03.key https://localhost:9200 | grep -q 'missing authentication credentials'"]
+      interval: 10s
+      timeout: 10s
+      retries: 60
 
-  opensearch-dashboards:
-    image: opensearchproject/opensearch-dashboards:${OPENSEARCH_VERSION:-latest}
-    container_name: os-dashboards
+  kibana:
+    image: docker.elastic.co/kibana/kibana:${ELASTICSEARCH_VERSION:-8.15.3}
+    container_name: kibana
     restart: unless-stopped
+    depends_on:
+      es01:
+        condition: service_healthy
+      configure:
+        condition: service_completed_successfully
+    # Hosts, SSL, and cert paths live in config/kibana/config/kibana.yml.
+    # Only secrets are injected here so they stay out of version control.
     environment:
-      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      # Kibana authenticates as the built-in kibana_system user, never the elastic superuser.
+      ELASTICSEARCH_USERNAME: kibana_system
+      ELASTICSEARCH_PASSWORD: ${KIBANA_PASSWORD}
+      # Required so saved objects / sessions survive restarts (>=32 chars each).
+      XPACK_SECURITY_ENCRYPTIONKEY: ${KIBANA_ENCRYPTION_KEY}
+      XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY: ${KIBANA_ENCRYPTION_KEY}
+      XPACK_REPORTING_ENCRYPTIONKEY: ${KIBANA_ENCRYPTION_KEY}
     volumes:
-      - "./config/opensearch-dashboards/config/opensearch-dashboards.yml:/usr/share/opensearch-dashboards/config/opensearch_dashboards.yml"
-      - ./stack-data/certificates/os-dashboards:/usr/share/opensearch-dashboards/config/certificates/os-dashboards:ro
-      - ./stack-data/certificates/ca-share:/usr/share/opensearch-dashboards/config/certificates/ca:ro
+      - "./config/kibana/config/kibana.yml:/usr/share/kibana/config/kibana.yml:ro"
+      - ./stack-data/certificates/kibana:/usr/share/kibana/config/certificates/kibana:ro
+      - ./stack-data/certificates/ca-share:/usr/share/kibana/config/certificates/ca:ro
     ports:
       - 5601:5601
     networks:
-      - core-net 
+      - core-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -k https://localhost:5601/api/status | grep -q '\"level\":\"available\"'"]
+      interval: 10s
+      timeout: 10s
+      retries: 60
 
-  fluentd:
-    build:
-      context: ./config/fluentd/
-      args:
-        FLUENTD_VERSION: ${FLUENTD_VERSION:-latest}
-    container_name: fluentd
+  logstash:
+    image: docker.elastic.co/logstash/logstash:${ELASTICSEARCH_VERSION:-8.15.3}
+    container_name: logstash
     restart: unless-stopped
+    depends_on:
+      es01:
+        condition: service_healthy
+      configure:
+        condition: service_completed_successfully
+    environment:
+      # Used by config/logstash/pipeline/beats.conf to authenticate to Elasticsearch.
+      LOGSTASH_PASSWORD: ${LOGSTASH_PASSWORD}
+      LS_JAVA_OPTS: "-Xms512m -Xmx512m"
     ports:
-      - "5044:5044"
+      - "5044:5044" # Beats input (mutual TLS)
     volumes:
-      - ./config/fluentd/config:/fluentd/etc:ro
-      - ./stack-data/certificates/fluentd:/certificates/fluentd:rw,Z
+      - ./config/logstash/pipeline:/usr/share/logstash/pipeline:ro
+      - ./config/logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+      - ./stack-data/certificates/logstash:/certificates/logstash:ro
       - ./stack-data/certificates/ca-share:/certificates/ca:ro
     networks:
       - core-net
@@ -165,6 +211,6 @@ networks:
     driver: bridge
 
 volumes:
-  os-data1:
-  os-data2:
-  os-data3:
+  es-data1:
+  es-data2:
+  es-data3:

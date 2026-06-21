@@ -1,0 +1,6 @@
+node.name: logstash
+http.host: "0.0.0.0"
+
+# This stack does not use Logstash's Elasticsearch-based monitoring or central
+# pipeline management, so disable them (avoids extra ES credentials/privileges).
+xpack.monitoring.enabled: false

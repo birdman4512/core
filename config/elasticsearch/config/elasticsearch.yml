@@ -1,0 +1,38 @@
+cluster.name: elasticsearch-cluster
+network.host: 0.0.0.0
+
+# Node roles configuration
+node.roles: [master, data, ingest, remote_cluster_client]
+
+bootstrap.memory_lock: "true" # when combined with ulimits memlock settings, disables swapping.
+
+cluster.routing.allocation.disk:
+  threshold_enabled: true
+  watermark.low: 93%
+  watermark.high: 95%
+
+discovery.seed_hosts: 
+  - 'es01'
+  - 'es02'
+  - 'es03'
+cluster.initial_master_nodes:
+  - 'es01'
+  - 'es02'
+  - 'es03'
+
+# Stay on the free Basic license (security features used here are included).
+xpack.license.self_generated.type: basic
+
+# Security settings
+xpack.security.enabled: true
+xpack.security.authc.api_key.enabled: true
+xpack.security.transport.ssl.enabled: true
+xpack.security.transport.ssl.verification_mode: certificate
+xpack.security.http.ssl.enabled: true
+xpack.security.http.ssl.verification_mode: certificate
+# Require mutual TLS on the HTTP layer: clients (Kibana, Logstash, admin curl)
+# must present a certificate signed by our CA in addition to authenticating.
+xpack.security.http.ssl.client_authentication: required
+
+# Audit logging
+xpack.security.audit.enabled: true

@@ -1,0 +1,26 @@
+server.name: kibana
+server.host: "0.0.0.0"
+server.port: 5601
+
+# Elasticsearch connection. Credentials (kibana_system) and the saved-object
+# encryption keys are injected via environment variables in docker-compose.yml
+# so that no secrets live in this file.
+elasticsearch.hosts:
+  - "https://es01:9200"
+  - "https://es02:9200"
+  - "https://es03:9200"
+
+# Verify the Elasticsearch HTTP certificate against our private CA.
+elasticsearch.ssl.certificateAuthorities: ["/usr/share/kibana/config/certificates/ca/ca.pem"]
+elasticsearch.ssl.verificationMode: certificate
+# Present Kibana's client certificate for mutual TLS to Elasticsearch.
+elasticsearch.ssl.certificate: "/usr/share/kibana/config/certificates/kibana/kibana.pem"
+elasticsearch.ssl.key: "/usr/share/kibana/config/certificates/kibana/kibana.key"
+
+# Serve the Kibana UI over HTTPS.
+server.ssl.enabled: true
+server.ssl.certificate: "/usr/share/kibana/config/certificates/kibana/kibana.pem"
+server.ssl.key: "/usr/share/kibana/config/certificates/kibana/kibana.key"
+
+# Spaces
+xpack.spaces.enabled: true
