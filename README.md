@@ -1,23 +1,24 @@
 # Coordinated Operations & Response Engine (CORE)
 
-The Coordinated Operations & Response Engine (CORE) is a flexible and scalable incident response log ingestion and management platform built on OpenSearch. It provides a centralized logging infrastructure for security operations, incident response, and threat hunting.
+The Coordinated Operations & Response Engine (CORE) is a flexible and scalable incident response log ingestion and management platform built on Elasticsearch. It provides a centralized logging infrastructure for security operations, incident response, and threat hunting.
 
 ## 🏗️ Architecture
 
 CORE consists of the following components:
 
-- **OpenSearch Cluster**: 3-node cluster for scalable log storage and search
-- **OpenSearch Dashboards**: Web interface for data visualization and exploration
-- **Fluentd**: Log aggregation and processing pipeline
-- **Security Layer**: Certificate-based authentication and encrypted communications
+- **Elasticsearch Cluster**: 3-node cluster (`es01`, `es02`, `es03`) for scalable log storage and search
+- **Kibana**: Web interface for data visualization and exploration
+- **Logstash**: Ingest pipeline (Beats input → Elasticsearch), with mutual TLS on both hops
+- **Setup**: One-shot containers that generate the CA/TLS certificates and provision service accounts
+- **Security Layer**: Private CA, mutual TLS between components, and least-privilege accounts
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 
-- Docker and Docker Compose
-- At least 4GB RAM available
-- Ports 5601 (Dashboards), 9200 (OpenSearch), 5044 (Fluentd) available
+- Docker and Docker Compose v2 (`docker compose`)
+- At least 4GB RAM available to Docker
+- Ports 5601 (Kibana), 9200 (Elasticsearch), 5044 (Logstash Beats input) available
 
 ### Installation
 
@@ -27,130 +28,158 @@ CORE consists of the following components:
    cd core
    ```
 
-2. **Configure environment** (optional)
-   Edit `docker-compose.env` to customize:
-   - Admin passwords
-   - Certificate details
-   - Component versions
+2. **Configure secrets (required)**
+   Edit `docker-compose.env` and change **every** password and the encryption key:
+   - `ELASTIC_PASSWORD` – cluster superuser
+   - `KIBANA_PASSWORD` – the `kibana_system` account
+   - `LOGSTASH_PASSWORD` – the least-privilege `logstash_writer` account
+   - `KIBANA_ENCRYPTION_KEY` – 32+ chars; generate with `openssl rand -hex 16`
+
+   You can also pin `ELASTICSEARCH_VERSION` here (Kibana uses the same tag).
 
 3. **Start the platform**
    ```bash
-   # Initialize certificates and security
-   docker-compose up setup
-
-   # Start all services
-   docker-compose up -d
+   docker compose --env-file docker-compose.env up -d
    ```
+   On first run the `setup` container generates certificates, the cluster forms,
+   and the `kibana_system` / `logstash_writer` accounts are provisioned
+   automatically. There is no separate "run setup first" step — startup order is
+   handled by health checks.
 
 4. **Access the interfaces**
-   - **OpenSearch Dashboards**: https://localhost:5601
-   - **OpenSearch API**: https://localhost:9200
-   - **Username**: `admin`
-   - **Password**: `admin` (or your configured `GLOBAL_ADMIN_PASS`)
+   - **Kibana**: https://localhost:5601
+   - **Elasticsearch API**: https://localhost:9200
+   - **Username**: `elastic`
+   - **Password**: your `ELASTIC_PASSWORD`
+
+   The certificates are signed by a private CA (`stack-data/certificates/ca-share/ca.pem`),
+   so browsers/curl will warn until you trust that CA. Use `curl -k` or pass
+   `--cacert stack-data/certificates/ca-share/ca.pem` to verify properly.
 
 ## 📊 Data Ingestion
 
-CORE supports multiple data sources through Fluentd:
-
-### Elastic Beats Integration
-
-Send data from any Elastic Beat:
+CORE ingests data through Logstash's Beats input on port 5044. This hop uses
+**mutual TLS**, so every Beat must present a client certificate signed by the
+CORE CA (in addition to trusting the CA). Generate a client cert by adding the
+beat to the `INSTANCES` list in `config/setup/entrypoint.sh`, or reuse the
+generated `client` cert under `stack-data/certificates/client/`.
 
 ```yaml
-# beats.yml configuration
+# filebeat.yml (or any Beat)
 output.logstash:
-  hosts: ["localhost:5044"]
+  hosts: ["core-host:5044"]
+  ssl.enabled: true
+  ssl.certificate_authorities: ["ca.pem"]      # the CORE CA certificate
+  ssl.certificate: "beat.pem"                   # CORE-signed client cert (required)
+  ssl.key: "beat.key"                           # its private key
 ```
 
-**Supported Beats:**
-- **Filebeat**: Log file shipping
-- **Metricbeat**: System and service metrics
-- **Packetbeat**: Network traffic monitoring
-- **Heartbeat**: Uptime monitoring
-- **Winlogbeat**: Windows event logs
-- **Auditbeat**: Audit data
+**Supported Beats:** Filebeat, Metricbeat, Packetbeat, Heartbeat, Winlogbeat, Auditbeat.
+
+Each beat is routed to its own index (e.g. `logstash-filebeat`, `logstash-packetbeat`)
+based on the beat name.
 
 ## ⚙️ Configuration
 
-### Environment Variables
+### Environment Variables (`docker-compose.env`)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPENSEARCH_VERSION` | `latest` | OpenSearch version |
-| `FLUENTD_VERSION` | `latest` | Fluentd version |
-| `GLOBAL_ADMIN_PASS` | `admin` | Admin password for all services |
-| `OPENSEARCH_HOST` | `os01` | OpenSearch cluster host |
-| `CERT_DN` | `OpenSearch-Cluster.localhost` | Certificate domain name |
+| `ELASTICSEARCH_VERSION` | `8.15.3` | Elasticsearch/Kibana/Logstash image tag |
+| `ELASTIC_PASSWORD` | _changeme_ | `elastic` superuser password |
+| `KIBANA_PASSWORD` | _changeme_ | `kibana_system` account password |
+| `LOGSTASH_PASSWORD` | _changeme_ | `logstash_writer` account password |
+| `KIBANA_ENCRYPTION_KEY` | _changeme_ | Kibana saved-object encryption key (≥32 chars) |
+| `CERT_DAYS` | `730` | Validity of the generated certificates |
 
 ### Index Patterns
 
-Data is automatically indexed with date-based patterns:
-- `fluentd-filebeat`
-- `fluentd-metricbeat`
-- `fluentd-packetbeat`
-- `fluentd-`
+Data is indexed per beat type:
+- `logstash-filebeat`
+- `logstash-metricbeat`
+- `logstash-packetbeat`
+- `logstash-<beatname>`
 
 ## 🔒 Security Features
 
-- **Certificate-based authentication** between components
-- **TLS encryption** for all communications
-- **Role-based access control** in OpenSearch
-- **Secure defaults** with configurable certificates
+- **Mutual TLS (mTLS)** on every internal hop: ES node↔node (transport), Kibana→ES,
+  Logstash→ES, and Beats→Logstash. The Elasticsearch HTTP layer is set to
+  `client_authentication: required`, so clients must present a CORE-signed certificate.
+- **Private CA**, with certificates auto-generated by `elasticsearch-certutil`;
+  private keys are not world-readable.
+- **No shared superuser**: Kibana uses `kibana_system`; Logstash uses a least-privilege
+  `logstash_writer` role scoped to `logstash-*`.
+- **Secrets via environment**, never committed to config files.
+- **Audit logging** enabled in Elasticsearch.
+
+> ℹ️ Browser → Kibana (port 5601) is one-way TLS (server cert + password login),
+> by design — no client certificate is required to reach the UI.
+
+> ⚠️ The defaults in `docker-compose.env` are placeholders. Always set strong, unique values before deployment.
 
 ## 🛠️ Development
 
-### Adding Custom Fluentd Plugins
+### Customising the Ingest Pipeline
 
-1. Edit `config/fluentd/Dockerfile`
-2. Add plugin installation: `RUN gem install plugin-name`
-3. Rebuild: `docker-compose build fluentd`
+Edit the Logstash pipeline in `config/logstash/pipeline/beats.conf` (add filters,
+change index naming, etc.) and restart with `docker compose restart logstash`.
 
-### Custom OpenSearch Configuration
+### Custom Elasticsearch / Kibana Configuration
 
-Modify files in `config/opensearch/config/` and `config/opensearch-dashboards/config/`
+Modify `config/elasticsearch/config/elasticsearch.yml` and
+`config/kibana/config/kibana.yml`. Per-node certificate paths are set via
+environment in `docker-compose.yml`.
 
 ### Scaling the Cluster
 
-Add more OpenSearch nodes by copying the `os01` service configuration and updating node names.
+Add more nodes by copying an `es0x` service in `docker-compose.yml`, adding the
+node name to `discovery.seed_hosts` / `cluster.initial_master_nodes` in
+`elasticsearch.yml`, and adding it to the `INSTANCES` list in
+`config/setup/entrypoint.sh` so it gets a certificate.
 
 ## 📈 Monitoring
 
-Monitor cluster health:
+Cluster health (the HTTP layer requires mTLS, so present the `client` cert):
 ```bash
-curl -k -u admin:admin https://localhost:9200/_cluster/health
+curl --cacert stack-data/certificates/ca-share/ca.pem \
+  --cert stack-data/certificates/client/client.pem \
+  --key stack-data/certificates/client/client.key \
+  -u elastic:$ELASTIC_PASSWORD \
+  https://localhost:9200/_cluster/health?pretty
 ```
 
-View Fluentd metrics:
+Logstash logs:
 ```bash
-docker-compose logs fluentd
+docker compose logs -f logstash
 ```
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test with `docker-compose up`
-5. Submit a pull request
-
-## 📄 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
 
 ## 🆘 Troubleshooting
 
-### Common Issues
-
-**Port conflicts**: Ensure ports 5601, 9200, 5044 are available
-**Memory issues**: Increase Docker memory allocation to 4GB+
-**Certificate errors**: Run `docker-compose up setup` first
-
-**Logs location**: `docker-compose logs <service-name>`
+- **Port conflicts**: Ensure 5601, 9200, 5044 are free.
+- **Memory issues**: Give Docker 4GB+; each node's heap is set via `ES_JAVA_OPTS`.
+- **`vm.max_map_count` too low** (Linux): `sudo sysctl -w vm.max_map_count=262144`.
+- **`curl` to Elasticsearch fails the TLS handshake**: the HTTP layer requires a
+  client certificate (mTLS). Pass `--cert`/`--key` (see the health-check example
+  above), or use the generated `client` cert under `stack-data/certificates/client/`.
+- **A Beat can't connect to Logstash**: Beats→Logstash is mTLS — the Beat must send
+  a CORE-signed client certificate (`ssl.certificate`/`ssl.key`) and trust the CA.
+- **Rotating the kibana_system / logstash_writer passwords**: update
+  `docker-compose.env` and re-run `docker compose --env-file docker-compose.env up -d`.
+  The idempotent `configure` phase re-applies them.
+- **Regenerating certificates or the elastic superuser password**: these are
+  bootstrapped from the data volumes, so reset the stack:
+  ```bash
+  docker compose down -v
+  docker compose --env-file docker-compose.env up -d
+  ```
 
 ### Reset Everything
-
 ```bash
-docker-compose down -v
-docker system prune -a
-docker-compose up setup
+docker compose down -v
+rm -rf stack-data/
+docker compose --env-file docker-compose.env up -d
 ```
+
+## 📄 License
+
+This project is licensed under the MIT License.
